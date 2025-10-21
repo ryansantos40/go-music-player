@@ -1,4 +1,4 @@
-package scanner
+package utils
 
 import (
 	"io/fs"
@@ -22,7 +22,6 @@ var supportedExt = map[string]struct{}{
 	".mp3":  {},
 	".flac": {},
 	".wav":  {},
-	".m4a":  {},
 	".ogg":  {},
 }
 

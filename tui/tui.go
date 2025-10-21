@@ -7,18 +7,18 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ryansantos40/go-music-player/scanner"
+	"github.com/ryansantos40/go-music-player/utils"
 )
 
 type Model struct {
 	viewport  viewport.Model
 	textInput textinput.Model
-	tracks    []scanner.Track
+	tracks    []utils.Track
 	scanning  bool
 }
 
 type scanMsg struct {
-	tracks []scanner.Track
+	tracks []utils.Track
 	err    error
 }
 
@@ -36,38 +36,42 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, tea.EnterAltScreen)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
-			return m, tea.Quit
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "ctrl+c", "q":
+				return m, tea.Quit
 
-		case "enter":
-			if !m.scanning {
-				m.scanning = true
-				return m, scanTracks(m.textInput.Value())
+			case "enter":
+				if !m.scanning {
+					m.scanning = true
+					return m, scanTracks(m.textInput.Value())
+				}
 			}
-		}
 
-	case scanMsg:
-		m.scanning = false
-		if msg.err != nil {
-			m.viewport.SetContent("Error scanning directory: " + msg.err.Error())
+		case scanMsg:
+			m.scanning = false
+			if msg.err != nil {
+				m.viewport.SetContent("Error scanning directory: " + msg.err.Error())
 
-		} else {
-			m.tracks = msg.tracks
-			content := "Scanned Tracks:\n"
-			for _, track := range m.tracks {
-				content += fmt.Sprintf("- %s (%s)\n", track.Title, track.Artist)
+			} else {
+				m.tracks = msg.tracks
+				content := "Scanned Tracks:\n"
+				for _, track := range m.tracks {
+					content += fmt.Sprintf("- %s (%s)\n", track.Title, track.Artist)
+				}
+				m.viewport.SetContent(content)
 			}
-			m.viewport.SetContent(content)
-		}
+
+		case tea.WindowSizeMsg:
+			m.viewport.Width = msg.Width
+			m.viewport.Height = msg.Height - 5
 	}
 
 	m.textInput, cmd = m.textInput.Update(msg)
@@ -94,7 +98,7 @@ func (m Model) View() string {
 
 func scanTracks(dir string) tea.Cmd {
 	return func() tea.Msg {
-		tracks, err := scanner.ScanDir(dir)
+		tracks, err := utils.ScanDir(dir)
 		return scanMsg{tracks: tracks, err: err}
 	}
 }
