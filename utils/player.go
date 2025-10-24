@@ -53,6 +53,8 @@ type Player struct {
 	speakerInit    bool
 	mu             sync.Mutex
 	currentFile    *os.File
+	volume         float64
+	volumeCtrl     *beep.Volume
 }
 
 func decodeAudioFile(f *os.File) (beep.StreamSeekCloser, beep.Format, error) {
@@ -78,8 +80,10 @@ func NewPlayer(tracks []Track) *Player {
 		shuffle:        false,
 		repeatMode:     RepeatOff,
 		speakerInit:    false,
+		volume:         1.0,
 	}
 }
+
 
 func (p *Player) createShuffledPlaylist() {
 	p.shuffledTracks = make([]Track, len(p.tracks))
@@ -392,4 +396,124 @@ func (p *Player) GetCurrentIndex() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.currentIndex
+}
+
+func (p *Player) SetVolume(volume float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if volume < 0 {
+		volume = 0
+	}
+
+	if volume > 1 {
+		volume = 1
+	}
+
+	p.volume = volume
+	if p.volumeCtrl != nil {
+		speaker.Lock()
+		p.volumeCtrl.Volume = volume
+		speaker.Unlock()
+	}
+}
+
+func (p *Player) GetVolume() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.volume
+}
+
+func (p *Player) SeekForward() error {
+	return p.seek(10 * time.Second)
+}
+
+func p(p *Player) SeekBackward() error {
+	return p.seek(-10 * time.Second)
+}
+
+func (p *Plauer) seek(offset time.Duration) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.streamer == nil || !p.playing {
+		return fmt.Errorf("no track is currently playing")
+	}
+
+	speaker.Lock()
+	defer speaker.Unlock()
+
+	currentPos := p.streamer.Position()
+	currentTime := time.Duration(float64(currentPos) / float64(p.format.SampleRate) * float64(time.Second))
+	newTime := currentTime + offset
+
+	if newTime < 0 {
+		newTime = 0
+	}
+
+	if newTime > p.totalTime {
+		newTime = p.totalTime
+	}
+
+	new Pos := int(float64(newTime) / float64(time.Second) * float64(p.format.SampleRate))
+
+	if newPos < 0 {
+		newPos = 0
+	}
+
+	if new Pos >= p.streamer.Len() {
+		newPos = p.streamer.Len() - 1
+	}
+
+	if err := p.streamer.Seek(newPos); err != nil {
+		return fmt.Errorf("failed to seek: %v", err)
+	}
+
+	p.currentTime = newTime
+	return nil
+}
+
+func (p *Player) GetProgress() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.totalTime == 0 {
+		return 0.0
+	}
+
+	if p.streamer != nil && p.playing {
+		speaker.Lock()
+		pos := p.streamer.Position()
+		speaker.Unlock()
+		p.currentTime = time.Duration(float64(pos) / float64(p.format.SampleRate) * float64(time.Second))
+	}
+
+	return float64(p.currentTime) / float64(p.totalTime)
+}
+
+func (p *Player) SeekToPosition(position float64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.streamer == nil || !p.playing {
+		return fmt.Errorf("no track is currently playing")
+	}
+
+	if position < 0.0 {
+		position = 0.0
+	}
+
+	if position > 1.0 {
+		position = 1.0
+	}
+
+	speaker.Lock()
+	defer speaker.Unlock()
+
+	newPos := int(position * float64(p.streamer.Len()))
+	if err := p.streamer.Seek(newPos); err != nil {
+		return fmt.Errorf("failed to seek: %v", err)
+	}
+
+	p.currentTime = time.Duration(float64(newPos) / float64(p.format.SampleRate) * float64(time.Second))
+	return nil
 }
