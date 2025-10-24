@@ -8,7 +8,7 @@ import (
 )
 
 type Playlist struct {
-	Name string
+	Name   string
 	Tracks []Track
 }
 
@@ -180,11 +180,11 @@ func (ps *PlaylistStore) ExportM3U(playlistName, exportPath string) error {
 	}
 	defer f.Close()
 
-	file.WriteString("#EXTM3U\n")
+	f.WriteString("#EXTM3U\n")
 	for _, track := range playlist.Tracks {
 		durationSeconds := int(track.Duration.Seconds())
-		file.WriteString(fmt.Sprintf("#EXTINF:%d,%s - %s\n", durationSeconds, track.Artist, track.Title))
-		file.WriteString(track.Path + "\n")
+		f.WriteString(fmt.Sprintf("#EXTINF:%d,%s - %s\n", durationSeconds, track.Artist, track.Title))
+		f.WriteString(track.Path + "\n")
 	}
 
 	return nil
