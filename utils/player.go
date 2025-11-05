@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/faiface/beep"
+	"github.com/faiface/beep/effects"
 	"github.com/faiface/beep/flac"
 	"github.com/faiface/beep/mp3"
 	"github.com/faiface/beep/speaker"
@@ -54,7 +55,7 @@ type Player struct {
 	mu             sync.Mutex
 	currentFile    *os.File
 	volume         float64
-	volumeCtrl     *beep.Volume
+	volumeCtrl     *effects.Volume
 }
 
 func decodeAudioFile(f *os.File) (beep.StreamSeekCloser, beep.Format, error) {
@@ -83,7 +84,6 @@ func NewPlayer(tracks []Track) *Player {
 		volume:         1.0,
 	}
 }
-
 
 func (p *Player) createShuffledPlaylist() {
 	p.shuffledTracks = make([]Track, len(p.tracks))
@@ -166,13 +166,20 @@ func (p *Player) Play() error {
 	p.format = format
 	p.totalTime = time.Duration(float64(streamer.Len()) / float64(format.SampleRate) * float64(time.Second))
 
-	// Inicializar speaker apenas uma vez
 	if !p.speakerInit {
 		speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
 		p.speakerInit = true
 	}
 
-	// Criar callback para quando a música terminar
+	p.volumeCtrl = &effects.Volume{
+		Streamer: p.streamer,
+		Base:     2,
+		Volume:   0,
+		Silent:   false,
+	}
+
+	p.volumeCtrl.Volume = p.volumeToDecibels(p.volume)
+
 	done := make(chan bool)
 	p.ctrl = &beep.Ctrl{
 		Streamer: beep.Seq(streamer, beep.Callback(func() {
@@ -398,6 +405,14 @@ func (p *Player) GetCurrentIndex() int {
 	return p.currentIndex
 }
 
+func (p *Player) volumeToDecibels(volume float64) float64 {
+	if volume <= 0.0001 {
+		return -10
+	}
+
+	return (volume - 1.0) * 5.0
+}
+
 func (p *Player) SetVolume(volume float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -412,7 +427,8 @@ func (p *Player) SetVolume(volume float64) {
 	p.volume = volume
 	if p.volumeCtrl != nil {
 		speaker.Lock()
-		p.volumeCtrl.Volume = volume
+		p.volumeCtrl.Volume = p.volumeToDecibels(volume)
+		p.volumeCtrl.Silent = (volume < 0.0001)
 		speaker.Unlock()
 	}
 }
@@ -427,11 +443,11 @@ func (p *Player) SeekForward() error {
 	return p.seek(10 * time.Second)
 }
 
-func p(p *Player) SeekBackward() error {
+func (p *Player) SeekBackward() error {
 	return p.seek(-10 * time.Second)
 }
 
-func (p *Plauer) seek(offset time.Duration) error {
+func (p *Player) seek(offset time.Duration) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -454,13 +470,13 @@ func (p *Plauer) seek(offset time.Duration) error {
 		newTime = p.totalTime
 	}
 
-	new Pos := int(float64(newTime) / float64(time.Second) * float64(p.format.SampleRate))
+	newPos := int(float64(newTime) / float64(time.Second) * float64(p.format.SampleRate))
 
 	if newPos < 0 {
 		newPos = 0
 	}
 
-	if new Pos >= p.streamer.Len() {
+	if newPos >= p.streamer.Len() {
 		newPos = p.streamer.Len() - 1
 	}
 
