@@ -174,15 +174,13 @@ func (p *Player) Play() error {
 	p.volumeCtrl = &effects.Volume{
 		Streamer: p.streamer,
 		Base:     2,
-		Volume:   0,
-		Silent:   false,
+		Volume:   p.volumeToDecibels(p.volume),
+		Silent:   p.volume < 0.0001,
 	}
-
-	p.volumeCtrl.Volume = p.volumeToDecibels(p.volume)
 
 	done := make(chan bool)
 	p.ctrl = &beep.Ctrl{
-		Streamer: beep.Seq(streamer, beep.Callback(func() {
+		Streamer: beep.Seq(p.volumeCtrl, beep.Callback(func() {
 			done <- true
 		})),
 		Paused: false,

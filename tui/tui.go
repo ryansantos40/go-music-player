@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -83,15 +84,18 @@ type Model struct {
 	errorMsg        string
 	width           int
 	height          int
+	fileExplorer    *utils.FileExplorer
+	explorerIndex   int
 }
 
 type AppMode int
 type InputMode int
 
 const (
-	ModeScan AppMode = iota
+	ModeExplorer AppMode = iota
 	ModePlayer
 	ModePlaylist
+	ModeScan
 )
 
 const (
@@ -120,6 +124,9 @@ func NewModel() Model {
 
 	playlistStore, _ := utils.NewPlaylistStore()
 
+	cwd, _ := os.Getwd()
+	fileExplorer := utils.NewFileExplorer(cwd)
+
 	return Model{
 		viewport:        vp,
 		textInput:       ti,
@@ -132,6 +139,8 @@ func NewModel() Model {
 		errorMsg:        "",
 		width:           80,
 		height:          24,
+		fileExplorer:    fileExplorer,
+		explorerIndex:   0,
 	}
 }
 
@@ -158,6 +167,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if msg.String() == "esc" {
+			if m.mode == ModeExplorer {
+				m.mode = ModeScan
+				m.explorerIndex = 0
+				return m, nil
+			}
 			m.inputMode = InputNone
 			m.textInput.Reset()
 			m.errorMsg = ""
@@ -177,8 +191,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 			}
+
+			if m.mode == ModeScan && msg.String() == "tab" {
+				m.mode = ModeExplorer
+				m.explorerIndex = 0
+				return m, nil
+			}
+
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
+		}
+
+		if m.mode == ModeExplorer {
+			switch msg.String() {
+			case "up", "k":
+				if m.explorerIndex > 0 {
+					m.explorerIndex--
+				}
+
+			case "down", "j":
+				if m.explorerIndex < len(m.fileExplorer.Entries)-1 {
+					m.explorerIndex++
+				}
+
+			case " ":
+				m.fileExplorer.EnterDirectory(m.explorerIndex)
+				m.explorerIndex = 0
+
+			case "enter":
+				selectedPath := m.fileExplorer.GetCurrentPath()
+				m.scanning = true
+				return m, scanTracks(selectedPath)
+
+			case "backspace", "h":
+				m.fileExplorer.GoToParent()
+				m.explorerIndex = 0
+			}
+
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -209,8 +259,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "enter":
-			m = m.handleEnter()
-			return m, scanTracks(m.textInput.Value())
+			if m.mode == ModePlayer && m.player != nil && len(m.tracks) > 0 {
+				m.player.Skip(m.selectedIndex)
+				m.lastTrackIdx = m.selectedIndex
+			} else if m.mode == ModePlaylist && m.currentPlaylist != "" {
+				if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
+					if m.selectedIndex < len(playlist.Tracks) {
+						m.player = utils.NewPlayer(playlist.Tracks)
+						m.player.Skip(m.selectedIndex)
+						m.mode = ModePlayer
+						m.lastTrackIdx = m.selectedIndex
+					}
+				}
+			}
 
 		case " ":
 			if m.mode == ModePlayer && m.player != nil {
@@ -299,8 +360,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		case "2":
-			m.mode = ModePlaylist
-			m.errorMsg = ""
+			if m.mode != ModeScan && m.mode != ModeExplorer {
+				m.mode = ModePlaylist
+				m.errorMsg = ""
+			}
 
 		case "?":
 			// Placeholder
@@ -310,6 +373,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanning = false
 		if msg.err != nil {
 			m.errorMsg = "Error: " + msg.err.Error()
+			m.mode = ModeExplorer
 		} else {
 			m.tracks = msg.tracks
 			m.mode = ModePlayer
@@ -411,12 +475,70 @@ func (m Model) View() string {
 		b.WriteString(m.renderPlayerMode())
 	case ModePlaylist:
 		b.WriteString(m.renderPlaylistMode())
+	case ModeExplorer:
+		b.WriteString(m.renderExplorerMode())
 	}
 
 	b.WriteString("\n" + strings.Repeat("─", m.width) + "\n")
 	b.WriteString(m.renderControls())
 
 	return appStyle.Width(m.width).Height(m.height).Render(b.String())
+}
+
+func (m Model) renderExplorerMode() string {
+	var b strings.Builder
+
+	b.WriteString(headerStyle.Render("📁 Select Music Directory") + "\n\n")
+	b.WriteString(subtleStyle.Render("Current: ") + inputStyle.Render(m.fileExplorer.GetCurrentPath()) + "\n\n")
+
+	if m.fileExplorer.Error != nil {
+		b.WriteString(errorStyle.Render("✗ "+m.fileExplorer.Error.Error()) + "\n")
+		return b.String()
+	}
+
+	maxVisible := 15
+	if m.height > 30 {
+		maxVisible = m.height - 15
+	}
+
+	start := 0
+	if m.explorerIndex >= maxVisible {
+		start = m.explorerIndex - maxVisible + 1
+	}
+
+	end := start + maxVisible
+	if end > len(m.fileExplorer.Entries) {
+		end = len(m.fileExplorer.Entries)
+	}
+
+	for i := start; i < end; i++ {
+		entry := m.fileExplorer.Entries[i]
+		icon := "📁"
+		if entry.Name == ".." {
+			icon = "⬆️ "
+		}
+
+		entryStr := fmt.Sprintf("%s %s", icon, entry.Name)
+
+		if i == m.explorerIndex {
+			entryStr = selectedStyle.Render(entryStr)
+		} else {
+			entryStr = " " + entryStr
+		}
+
+		b.WriteString(entryStr + "\n")
+	}
+
+	if len(m.fileExplorer.Entries) > maxVisible {
+		remaining := len(m.fileExplorer.Entries) - end
+		if remaining > 0 {
+			b.WriteString(subtleStyle.Render(fmt.Sprintf("\n... %d more directories", remaining)))
+		}
+	}
+
+	b.WriteString("\n" + subtleStyle.Render("Space: Enter dir • Enter: Select • Backspace/h: Go up • ESC: Manual input"))
+
+	return b.String()
 }
 
 func (m Model) renderInput() string {
@@ -443,7 +565,7 @@ func (m Model) renderScanMode() string {
 	if m.scanning {
 		b.WriteString(statusStyle.Render("⏳ Scanning directory...") + "\n")
 	} else {
-		b.WriteString(subtleStyle.Render("Press Enter to start scanning"))
+		b.WriteString(subtleStyle.Render("Press Enter to start scanning or 'tab' to use file explorer"))
 	}
 
 	return b.String()
@@ -600,6 +722,27 @@ func (m Model) renderTrackList() string {
 }
 
 func (m Model) renderControls() string {
+	if m.mode == ModeExplorer {
+		controls := []string{
+			"[↑↓/jk] Navigate",
+			"[Space] Enter",
+			"[Backspace/h] Up",
+			"[Enter] Select",
+			"[ESC] Manual",
+			"[q] Quit",
+		}
+		return helpStyle.Render(strings.Join(controls, " • "))
+	}
+
+	if m.mode == ModeScan {
+		controls := []string{
+			"[tab] Explorer",
+			"[Enter] Scan",
+			"[q] Quit",
+		}
+		return helpStyle.Render(strings.Join(controls, " • "))
+	}
+
 	controls := []string{
 		"[1] Library",
 		"[2] Playlists",
