@@ -16,28 +16,34 @@ import (
 var (
 	colorBg      = lipgloss.Color("#1e2139")
 	colorFg      = lipgloss.Color("#e0e0e0")
-	colorAccent  = lipgloss.Color("#7D56F4")
-	colorSuccess = lipgloss.Color("#04B575")
+	colorAccent  = lipgloss.Color("#6ee7b7")
+	colorSuccess = lipgloss.Color("#6ee7b7")
 	colorDanger  = lipgloss.Color("#FF0000")
-	colorSubtle  = lipgloss.Color("#888888")
+	colorSubtle  = lipgloss.Color("#9ca3b0")
 
 	appStyle = lipgloss.NewStyle().
 			Background(colorBg).
-			Padding(1, 2)
+			Foreground(colorFg)
 
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(colorFg).
-			Background(colorBg).
-			MarginBottom(1)
+			Background(colorBg)
 
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(colorAccent).
-			Background(colorBg)
+			Foreground(colorFg).
+			Background(colorBg).
+			Align(lipgloss.Center)
+
+	sectionTitleStyle = lipgloss.NewStyle().
+				Foreground(colorFg).
+				Background(colorBg).
+				Bold(true).
+				Align(lipgloss.Center)
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(colorSuccess).
+			Foreground(colorAccent).
 			Background(colorBg)
 
 	errorStyle = lipgloss.NewStyle().
@@ -46,12 +52,12 @@ var (
 			Bold(true)
 
 	selectedStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFF")).
-			Background(colorAccent).
+			Foreground(colorAccent).
+			Background(colorBg).
 			Bold(true)
 
 	playingStyle = lipgloss.NewStyle().
-			Foreground(colorSuccess).
+			Foreground(colorAccent).
 			Background(colorBg).
 			Bold(true)
 
@@ -59,14 +65,18 @@ var (
 			Foreground(colorSubtle).
 			Background(colorBg)
 
-	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#666")).
-			Background(colorBg).
-			MarginTop(1)
-
 	inputStyle = lipgloss.NewStyle().
 			Background(colorBg).
 			Foreground(colorFg)
+
+	borderStyle = lipgloss.NewStyle().
+			BorderStyle(lipgloss.NormalBorder()).
+			BorderForeground(colorSubtle).
+			Background(colorBg)
+
+	columnStyle = lipgloss.NewStyle().
+			Background(colorBg).
+			Padding(0, 1)
 )
 
 type Model struct {
@@ -86,6 +96,8 @@ type Model struct {
 	height          int
 	fileExplorer    *utils.FileExplorer
 	explorerIndex   int
+	playlistIndex   int
+	focusedColumn   int // 0=playlists, 1=tracks, 2=visualizer
 }
 
 type AppMode int
@@ -137,10 +149,12 @@ func NewModel() Model {
 		currentPlaylist: "",
 		inputMode:       InputNone,
 		errorMsg:        "",
-		width:           80,
-		height:          24,
+		width:           120,
+		height:          30,
 		fileExplorer:    fileExplorer,
 		explorerIndex:   0,
+		playlistIndex:   0,
+		focusedColumn:   0,
 	}
 }
 
@@ -159,7 +173,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+c" || (msg.String() == "q" && m.inputMode == InputNone) {
+		if msg.String() == "ctrl+c" || (msg.String() == "q" && m.inputMode == InputNone && m.mode != ModeScan) {
 			if m.player != nil {
 				m.player.Stop()
 			}
@@ -178,6 +192,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Input modes
 		if m.inputMode != InputNone || m.mode == ModeScan {
 			if msg.String() == "enter" {
 				if m.inputMode != InputNone {
@@ -189,7 +204,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m = m.handleEnter()
 					return m, scanTracks(m.textInput.Value())
 				}
-
 			}
 
 			if m.mode == ModeScan && msg.String() == "tab" {
@@ -202,171 +216,176 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 
+		// Explorer mode
 		if m.mode == ModeExplorer {
 			switch msg.String() {
 			case "up", "k":
 				if m.explorerIndex > 0 {
 					m.explorerIndex--
 				}
-
 			case "down", "j":
 				if m.explorerIndex < len(m.fileExplorer.Entries)-1 {
 					m.explorerIndex++
 				}
-
 			case " ":
 				m.fileExplorer.EnterDirectory(m.explorerIndex)
 				m.explorerIndex = 0
-
 			case "enter":
 				selectedPath := m.fileExplorer.GetCurrentPath()
 				m.scanning = true
 				return m, scanTracks(selectedPath)
-
 			case "backspace", "h":
 				m.fileExplorer.GoToParent()
 				m.explorerIndex = 0
 			}
-
 			return m, nil
 		}
 
-		switch msg.String() {
-		case "up", "k":
-			if m.mode == ModePlayer || m.mode == ModePlaylist {
-				tracksLen := len(m.tracks)
-				if m.mode == ModePlaylist && m.currentPlaylist != "" {
-					if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-						tracksLen = len(playlist.Tracks)
+		// Main player navigation
+		if m.mode == ModePlayer {
+			switch msg.String() {
+			case "tab":
+				m.focusedColumn = (m.focusedColumn + 1) % 2 // 0=playlists, 1=tracks
+
+			case "up", "k":
+				if m.focusedColumn == 0 {
+					// Navigate playlists
+					playlists := m.playlistStore.ListPlaylists()
+					if len(playlists) > 0 {
+						m.playlistIndex = (m.playlistIndex - 1 + len(playlists)) % len(playlists)
+						m.currentPlaylist = playlists[m.playlistIndex]
+						m.selectedIndex = 0
+					}
+				} else if m.focusedColumn == 1 {
+					// Navigate tracks
+					tracksLen := len(m.tracks)
+					if m.currentPlaylist != "" {
+						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
+							tracksLen = len(playlist.Tracks)
+						}
+					}
+					if tracksLen > 0 {
+						m.selectedIndex = (m.selectedIndex - 1 + tracksLen) % tracksLen
 					}
 				}
-				if tracksLen > 0 {
-					m.selectedIndex = (m.selectedIndex - 1 + tracksLen) % tracksLen
-				}
-			}
 
-		case "down", "j":
-			if m.mode == ModePlayer || m.mode == ModePlaylist {
-				tracksLen := len(m.tracks)
-				if m.mode == ModePlaylist && m.currentPlaylist != "" {
-					if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-						tracksLen = len(playlist.Tracks)
+			case "down", "j":
+				if m.focusedColumn == 0 {
+					playlists := m.playlistStore.ListPlaylists()
+					if len(playlists) > 0 {
+						m.playlistIndex = (m.playlistIndex + 1) % len(playlists)
+						m.currentPlaylist = playlists[m.playlistIndex]
+						m.selectedIndex = 0
+					}
+				} else if m.focusedColumn == 1 {
+					tracksLen := len(m.tracks)
+					if m.currentPlaylist != "" {
+						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
+							tracksLen = len(playlist.Tracks)
+						}
+					}
+					if tracksLen > 0 {
+						m.selectedIndex = (m.selectedIndex + 1) % tracksLen
 					}
 				}
-				if tracksLen > 0 {
-					m.selectedIndex = (m.selectedIndex + 1) % tracksLen
-				}
-			}
 
-		case "enter":
-			if m.mode == ModePlayer && m.player != nil && len(m.tracks) > 0 {
-				m.player.Skip(m.selectedIndex)
-				m.lastTrackIdx = m.selectedIndex
-			} else if m.mode == ModePlaylist && m.currentPlaylist != "" {
-				if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-					if m.selectedIndex < len(playlist.Tracks) {
-						m.player = utils.NewPlayer(playlist.Tracks)
+			case "enter":
+				if m.focusedColumn == 1 && m.player != nil {
+					if m.currentPlaylist != "" {
+						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
+							if m.selectedIndex < len(playlist.Tracks) {
+								m.player = utils.NewPlayer(playlist.Tracks)
+								m.player.Skip(m.selectedIndex)
+								m.lastTrackIdx = m.selectedIndex
+							}
+						}
+					} else if len(m.tracks) > 0 {
 						m.player.Skip(m.selectedIndex)
-						m.mode = ModePlayer
 						m.lastTrackIdx = m.selectedIndex
 					}
 				}
-			}
 
-		case " ":
-			if m.mode == ModePlayer && m.player != nil {
-				if m.player.IsPlaying() {
-					m.player.Pause()
-				} else {
-					m.player.Resume()
+			case " ":
+				if m.player != nil {
+					if m.player.IsPlaying() {
+						m.player.Pause()
+					} else {
+						m.player.Resume()
+					}
 				}
-			}
 
-		case "n":
-			if m.player != nil {
-				m.player.Next()
-			}
+			case "n":
+				if m.player != nil {
+					m.player.Next()
+				}
 
-		case "p":
-			if m.player != nil {
-				m.player.Previous()
-			}
+			case "p":
+				if m.player != nil {
+					m.player.Previous()
+				}
 
-		case "s":
-			if m.player != nil {
-				m.player.ToggleShuffle()
-			}
+			case "s":
+				if m.player != nil {
+					m.player.ToggleShuffle()
+				}
 
-		case "r":
-			if m.player != nil {
-				m.player.ToggleRepeat()
-			}
+			case "r":
+				if m.player != nil {
+					m.player.ToggleRepeat()
+				}
 
-		case "right", "l":
-			if m.player != nil && m.player.IsPlaying() {
-				m.player.SeekForward()
-				return m, tick()
-			}
+			case "right", "l":
+				if m.player != nil && m.player.IsPlaying() {
+					m.player.SeekForward()
+					return m, tick()
+				}
 
-		case "left", "h":
-			if m.player != nil && m.player.IsPlaying() {
-				m.player.SeekBackward()
-				return m, tick()
-			}
+			case "left", "h":
+				if m.player != nil && m.player.IsPlaying() {
+					m.player.SeekBackward()
+					return m, tick()
+				}
 
-		case "+", "=":
-			if m.player != nil {
-				m.player.SetVolume(m.player.GetVolume() + 0.1)
-			}
+			case "+", "=":
+				if m.player != nil {
+					m.player.SetVolume(m.player.GetVolume() + 0.1)
+				}
 
-		case "-", "_":
-			if m.player != nil {
-				m.player.SetVolume(m.player.GetVolume() - 0.1)
-			}
+			case "-", "_":
+				if m.player != nil {
+					m.player.SetVolume(m.player.GetVolume() - 0.1)
+				}
 
-		case "c":
-			if m.mode == ModePlayer {
+			case "c":
 				m.inputMode = InputPlaylistName
 				m.textInput.Placeholder = "Enter playlist name..."
 				m.textInput.Focus()
-			}
 
-		case "L":
-			if m.mode == ModePlayer {
-				m.inputMode = InputPlaylistLoad
-				m.textInput.Placeholder = "Enter playlist name to load..."
-				m.textInput.Focus()
-			}
+			case "a":
+				if m.currentPlaylist != "" && m.player != nil {
+					track := m.player.GetCurrentTrack()
+					if err := m.playlistStore.AddTrack(m.currentPlaylist, track); err != nil {
+						m.errorMsg = err.Error()
+					}
+				}
 
-		case "a":
-			if m.mode == ModePlaylist && m.player != nil && m.currentPlaylist != "" {
-				track := m.player.GetCurrentTrack()
-				if err := m.playlistStore.AddTrack(m.currentPlaylist, track); err != nil {
-					m.errorMsg = err.Error()
+			case "x":
+				if m.currentPlaylist != "" && m.focusedColumn == 1 {
+					if err := m.playlistStore.RemoveTrack(m.currentPlaylist, m.selectedIndex); err != nil {
+						m.errorMsg = err.Error()
+					}
+				}
+
+			case "d":
+				if m.currentPlaylist != "" && m.focusedColumn == 0 {
+					if err := m.playlistStore.DeletePlaylist(m.currentPlaylist); err != nil {
+						m.errorMsg = err.Error()
+					} else {
+						m.currentPlaylist = ""
+						m.playlistIndex = 0
+					}
 				}
 			}
-
-		case "d":
-			if m.mode == ModePlaylist && m.currentPlaylist != "" {
-				if err := m.playlistStore.RemoveTrack(m.currentPlaylist, m.selectedIndex); err != nil {
-					m.errorMsg = err.Error()
-				}
-			}
-
-		case "1":
-			if m.mode != ModeScan {
-				m.mode = ModePlayer
-				m.errorMsg = ""
-			}
-
-		case "2":
-			if m.mode != ModeScan && m.mode != ModeExplorer {
-				m.mode = ModePlaylist
-				m.errorMsg = ""
-			}
-
-		case "?":
-			// Placeholder
 		}
 
 	case scanMsg:
@@ -417,7 +436,6 @@ func (m Model) handleInputSubmit() Model {
 			m.errorMsg = err.Error()
 		} else {
 			m.currentPlaylist = value
-			m.mode = ModePlaylist
 		}
 	}
 
@@ -431,114 +449,366 @@ func (m Model) handleEnter() Model {
 		m.scanning = true
 		return m
 	}
-
-	if m.mode == ModePlayer && m.player != nil && len(m.tracks) > 0 {
-		m.player.Skip(m.selectedIndex)
-		return m
-	}
-
-	if m.mode == ModePlaylist && m.currentPlaylist != "" {
-		if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-			if m.selectedIndex < len(playlist.Tracks) {
-				m.player = utils.NewPlayer(playlist.Tracks)
-				m.player.Skip(m.selectedIndex)
-				m.mode = ModePlayer
-			}
-		}
-	}
-
 	return m
 }
 
 func (m Model) View() string {
-	var b strings.Builder
-
-	title := titleStyle.Render("♫ Go Music Player")
-	b.WriteString(title + "\n")
-	b.WriteString(strings.Repeat("─", m.width) + "\n\n")
-
-	if m.errorMsg != "" {
-		b.WriteString(errorStyle.Render("✗ " + m.errorMsg))
-		b.WriteString("\n\n")
-	}
-
 	if m.inputMode != InputNone {
-		b.WriteString(m.renderInput())
-		b.WriteString("\n")
-		return appStyle.Width(m.width).Height(m.height).Render(b.String())
+		return appStyle.Width(m.width).Height(m.height).Render(m.renderInput())
 	}
 
 	switch m.mode {
 	case ModeScan:
-		b.WriteString(m.renderScanMode())
-	case ModePlayer:
-		b.WriteString(m.renderPlayerMode())
-	case ModePlaylist:
-		b.WriteString(m.renderPlaylistMode())
+		return appStyle.Width(m.width).Height(m.height).Render(m.renderScanMode())
 	case ModeExplorer:
-		b.WriteString(m.renderExplorerMode())
+		return appStyle.Width(m.width).Height(m.height).Render(m.renderExplorerMode())
+	case ModePlayer:
+		return appStyle.Width(m.width).Height(m.height).Render(m.renderPlayerMode())
 	}
 
-	b.WriteString("\n" + strings.Repeat("─", m.width) + "\n")
-	b.WriteString(m.renderControls())
-
-	return appStyle.Width(m.width).Height(m.height).Render(b.String())
+	return ""
 }
 
-func (m Model) renderExplorerMode() string {
+func (m Model) renderPlayerMode() string {
 	var b strings.Builder
 
-	b.WriteString(headerStyle.Render("📁 Select Music Directory") + "\n\n")
-	b.WriteString(subtleStyle.Render("Current: ") + inputStyle.Render(m.fileExplorer.GetCurrentPath()) + "\n\n")
+	// Header
+	b.WriteString(m.renderHeader())
+	b.WriteString("\n")
 
-	if m.fileExplorer.Error != nil {
-		b.WriteString(errorStyle.Render("✗ "+m.fileExplorer.Error.Error()) + "\n")
+	// Progress bar
+	b.WriteString(m.renderProgressBar())
+	b.WriteString("\n\n")
+
+	// 3 Columns layout
+	col1 := m.renderPlaylistColumn()
+	col2 := m.renderTracksColumn()
+	col3 := m.renderVisualizerColumn()
+
+	col1Width := m.width / 3
+	col2Width := m.width / 3
+	col3Width := m.width - col1Width - col2Width
+
+	col1Styled := borderStyle.
+		Width(col1Width - 2).
+		Height(m.height - 12).
+		Render(col1)
+
+	col2Styled := borderStyle.
+		Width(col2Width - 2).
+		Height(m.height - 12).
+		Render(col2)
+
+	col3Styled := borderStyle.
+		Width(col3Width - 2).
+		Height(m.height - 12).
+		Render(col3)
+
+	columns := lipgloss.JoinHorizontal(lipgloss.Top, col1Styled, col2Styled, col3Styled)
+	b.WriteString(columns)
+
+	b.WriteString("\n\n")
+
+	// Footer with commands
+	b.WriteString(m.renderCommands())
+
+	return b.String()
+}
+
+func (m Model) renderHeader() string {
+	if m.player == nil {
+		return titleStyle.Render("|-------------------------------------------|")
+	}
+
+	current := m.player.GetCurrentTrack()
+	songInfo := fmt.Sprintf("Playing: %s - %s", current.Title, current.Artist)
+
+	status := ""
+	if m.player.IsPlaying() {
+		status = "▶ "
+	} else {
+		status = "⏸ "
+	}
+
+	volumeStr := fmt.Sprintf("Vol: %d%%", int(m.player.GetVolume()*100))
+	timeStr := fmt.Sprintf("Time: %s / %s",
+		formatTime(m.player.GetCurrentTime()),
+		formatTime(m.player.GetTotalTime()))
+
+	left := titleStyle.Render(songInfo)
+	center := titleStyle.Render(" ")
+	right := titleStyle.Render(fmt.Sprintf("%s | %s | %s |", status, volumeStr, timeStr))
+
+	// Distribute space
+	leftWidth := lipgloss.Width(left)
+	centerWidth := lipgloss.Width(center)
+	rightWidth := lipgloss.Width(right)
+
+	totalUsed := leftWidth + centerWidth + rightWidth
+	spacing := (m.width - totalUsed) / 2
+
+	header := left + strings.Repeat(" ", spacing) + center + strings.Repeat(" ", spacing) + right
+
+	return titleStyle.Width(m.width).Render(header)
+}
+
+func (m Model) renderProgressBar() string {
+	if m.player == nil {
+		return ""
+	}
+
+	currentTime := m.player.GetCurrentTime()
+	totalTime := m.player.GetTotalTime()
+
+	barWidth := m.width - 2
+	bar := formatProgressBar(currentTime, totalTime, barWidth)
+
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Background(colorBg).
+		Render(bar)
+}
+
+func (m Model) renderPlaylistColumn() string {
+	var b strings.Builder
+
+	title := "--- [ PLAYLISTS ] ---"
+	b.WriteString(sectionTitleStyle.Width(m.width/3 - 4).Render(title))
+	b.WriteString("\n\n")
+
+	playlists := m.playlistStore.ListPlaylists()
+
+	if len(playlists) == 0 {
+		b.WriteString(subtleStyle.Render("No playlists yet"))
+		b.WriteString("\n\n")
+		b.WriteString(subtleStyle.Render("Press 'c' to create"))
 		return b.String()
 	}
 
-	maxVisible := 15
-	if m.height > 30 {
-		maxVisible = m.height - 15
-	}
-
+	maxVisible := (m.height - 16) / 2
 	start := 0
-	if m.explorerIndex >= maxVisible {
-		start = m.explorerIndex - maxVisible + 1
+	if m.playlistIndex >= maxVisible {
+		start = m.playlistIndex - maxVisible + 1
 	}
 
 	end := start + maxVisible
-	if end > len(m.fileExplorer.Entries) {
-		end = len(m.fileExplorer.Entries)
+	if end > len(playlists) {
+		end = len(playlists)
 	}
 
 	for i := start; i < end; i++ {
-		entry := m.fileExplorer.Entries[i]
-		icon := "📁"
-		if entry.Name == ".." {
-			icon = "⬆️ "
+		name := playlists[i]
+		trackCount := 0
+
+		if playlist, err := m.playlistStore.GetPlaylist(name); err == nil {
+			trackCount = len(playlist.Tracks)
 		}
 
-		entryStr := fmt.Sprintf("%s %s", icon, entry.Name)
+		line := fmt.Sprintf("%s (%d tracks)", name, trackCount)
 
-		if i == m.explorerIndex {
-			entryStr = selectedStyle.Render(entryStr)
+		if i == m.playlistIndex && m.focusedColumn == 0 {
+			b.WriteString(selectedStyle.Render("> " + line))
+		} else if name == m.currentPlaylist {
+			b.WriteString(statusStyle.Render("* " + line))
 		} else {
-			entryStr = " " + entryStr
+			b.WriteString(subtleStyle.Render("  " + line))
 		}
 
-		b.WriteString(entryStr + "\n")
+		b.WriteString("\n")
 	}
-
-	if len(m.fileExplorer.Entries) > maxVisible {
-		remaining := len(m.fileExplorer.Entries) - end
-		if remaining > 0 {
-			b.WriteString(subtleStyle.Render(fmt.Sprintf("\n... %d more directories", remaining)))
-		}
-	}
-
-	b.WriteString("\n" + subtleStyle.Render("Space: Enter dir • Enter: Select • Backspace/h: Go up • ESC: Manual input"))
 
 	return b.String()
+}
+
+func (m Model) renderTracksColumn() string {
+	var b strings.Builder
+
+	title := fmt.Sprintf("--- [ TRACKS in '%s' ] ---", m.currentPlaylist)
+	if m.currentPlaylist == "" {
+		title = "--- [ ALL TRACKS ] ---"
+	}
+
+	b.WriteString(sectionTitleStyle.Width(m.width/3 - 4).Render(title))
+	b.WriteString("\n\n")
+
+	var tracks []utils.Track
+	if m.currentPlaylist != "" {
+		if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
+			tracks = playlist.Tracks
+		}
+	} else {
+		tracks = m.tracks
+	}
+
+	if len(tracks) == 0 {
+		b.WriteString(subtleStyle.Render("No tracks"))
+		return b.String()
+	}
+
+	maxVisible := m.height - 16
+	start := 0
+	if m.selectedIndex >= maxVisible {
+		start = m.selectedIndex - maxVisible + 1
+	}
+
+	end := start + maxVisible
+	if end > len(tracks) {
+		end = len(tracks)
+	}
+
+	for i := start; i < end; i++ {
+		track := tracks[i]
+		line := fmt.Sprintf("%d. %s - %s", i+1, track.Title, track.Artist)
+
+		if i == m.selectedIndex && m.focusedColumn == 1 {
+			b.WriteString(selectedStyle.Render("> " + line))
+		} else if m.player != nil && track.Path == m.player.GetCurrentTrack().Path {
+			b.WriteString(playingStyle.Render("♫ " + line))
+		} else {
+			b.WriteString(subtleStyle.Render("  " + line))
+		}
+
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+func (m Model) renderVisualizerColumn() string {
+	var b strings.Builder
+
+	title := "--- [ VISUALIZER ] ---"
+	b.WriteString(sectionTitleStyle.Width(m.width/3 - 4).Render(title))
+	b.WriteString("\n\n")
+
+	availableHeight := m.height - 16
+	visualizerHeight := 7
+	infoHeight := 3
+
+	topPadding := (availableHeight - visualizerHeight - infoHeight) / 2
+
+	emptyLine := lipgloss.NewStyle().
+		Width(m.width/3 - 4).
+		Background(colorBg).
+		Render("")
+
+	for i := 0; i < topPadding; i++ {
+		b.WriteString(emptyLine)
+		b.WriteString("\n")
+	}
+
+	visualizer := m.generateVisualizer()
+	visualizerLines := strings.Split(visualizer, "\n")
+	for _, line := range visualizerLines {
+		if line != "" {
+			centered := lipgloss.NewStyle().
+				Width(m.width/3 - 4).
+				Align(lipgloss.Center).
+				Foreground(colorAccent).
+				Background(colorBg).
+				Render(line)
+			b.WriteString(centered)
+			b.WriteString("\n")
+		}
+	}
+
+	remainingSpace := availableHeight - topPadding - visualizerHeight - infoHeight
+	for i := 0; i < remainingSpace; i++ {
+		b.WriteString(emptyLine)
+		b.WriteString("\n")
+	}
+
+	if m.player != nil {
+		current := m.player.GetCurrentTrack()
+
+		infoStyle := lipgloss.NewStyle().
+			Foreground(colorSubtle).
+			Background(colorBg).
+			Width(m.width/3 - 4).
+			Align(lipgloss.Left)
+
+		yearStr := "Unknown"
+		if current.Year != 0 {
+			yearStr = fmt.Sprintf("%d", current.Year)
+		}
+
+		artistLine := infoStyle.Render(fmt.Sprintf("Artist: %s", current.Artist))
+		albumLine := infoStyle.Render(fmt.Sprintf("Album: %s", current.Album))
+		yearLine := infoStyle.Render(fmt.Sprintf("Year: %s", yearStr))
+
+		b.WriteString(artistLine + "\n")
+		b.WriteString(albumLine + "\n")
+		b.WriteString(yearLine)
+	} else {
+		b.WriteString(emptyLine + "\n")
+		b.WriteString(emptyLine + "\n")
+		b.WriteString(emptyLine)
+	}
+
+	return b.String()
+}
+
+func (m Model) generateVisualizer() string {
+	if m.player == nil || !m.player.IsPlaying() {
+		return `
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   `
+	}
+
+	progress := m.player.GetProgress()
+	frame := int(progress*10) % 5
+
+	frames := []string{
+		`
+   |   ||   |||    ||||    
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   `,
+		`
+   .  |..  |..|||   ||||   
+   |   ||   |||    ||||    
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....`,
+		`
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   
+   |   ||   |||    ||||    
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   `,
+		`
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....
+   |   ||   |||    ||||    
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   `,
+		`
+ ...|...||...|||....|||....
+   .  |..  |..|||   ||||   
+ ...|...||...|||....|||....
+   |   ||   |||    ||||    
+   .  |..  |..|||   ||||   `,
+	}
+
+	if frame < len(frames) {
+		return frames[frame]
+	}
+	return frames[0]
+}
+
+func (m Model) renderCommands() string {
+	commands := "COMMANDS: [C]reate, [D]elete, [ENTER] Select   [A]dd Song, [X]Remove, [SPACE] Play/Pause, [N]ext, [P]rev, [TAB] Switch Column"
+
+	cmdStyle := lipgloss.NewStyle().
+		Foreground(colorSubtle).
+		Background(colorBg).
+		Width(m.width)
+
+	return cmdStyle.Render(commands)
 }
 
 func (m Model) renderInput() string {
@@ -549,8 +819,8 @@ func (m Model) renderInput() string {
 		prompt = "Load Playlist"
 	}
 
-	b.WriteString(headerStyle.Render(prompt) + "\n")
-	b.WriteString(inputStyle.Render(m.textInput.View()) + "\n")
+	b.WriteString(headerStyle.Render(prompt) + "\n\n")
+	b.WriteString(inputStyle.Render(m.textInput.View()) + "\n\n")
 	b.WriteString(subtleStyle.Render("Press ESC to cancel, Enter to confirm"))
 
 	return b.String()
@@ -571,194 +841,49 @@ func (m Model) renderScanMode() string {
 	return b.String()
 }
 
-func (m Model) renderPlayerMode() string {
+func (m Model) renderExplorerMode() string {
 	var b strings.Builder
 
-	if m.player == nil {
-		return subtleStyle.Render("No tracks loaded")
+	b.WriteString(headerStyle.Render("📁 File Explorer") + "\n\n")
+	b.WriteString(subtleStyle.Render("Current: ") + inputStyle.Render(m.fileExplorer.GetCurrentPath()) + "\n\n")
+
+	if m.fileExplorer.Error != nil {
+		b.WriteString(errorStyle.Render("✗ "+m.fileExplorer.Error.Error()) + "\n")
+		return b.String()
 	}
 
-	current := m.player.GetCurrentTrack()
-	b.WriteString(headerStyle.Render("♫ Now Playing") + "\n")
-	b.WriteString(fmt.Sprintf("%s\n", playingStyle.Render(current.Title)))
-	b.WriteString(subtleStyle.Render(fmt.Sprintf("%s • %s", current.Artist, current.Album)) + "\n\n")
-
-	status := m.renderStatusBar()
-	b.WriteString(status + "\n\n")
-
-	progress := m.renderProgressBar()
-	b.WriteString(progress + "\n\n")
-
-	b.WriteString(headerStyle.Render(fmt.Sprintf("Library (%d tracks)", len(m.tracks))) + "\n")
-	b.WriteString(m.renderTrackList())
-
-	return b.String()
-}
-
-func (m Model) renderPlaylistMode() string {
-	var b strings.Builder
-
-	b.WriteString(headerStyle.Render(fmt.Sprintf("📋 Playlist: %s", m.currentPlaylist)) + "\n")
-
-	if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-		b.WriteString(subtleStyle.Render(fmt.Sprintf("%d tracks", len(playlist.Tracks))) + "\n\n")
-
-		for i, track := range playlist.Tracks {
-			prefix := "  "
-			trackStr := fmt.Sprintf("[%d] %s - %s", i+1, track.Title, track.Artist)
-
-			if i == m.selectedIndex {
-				trackStr = selectedStyle.Render("▶ " + trackStr)
-			} else {
-				trackStr = prefix + trackStr
-			}
-
-			b.WriteString(trackStr + "\n")
-		}
-	}
-
-	return b.String()
-}
-
-func (m Model) renderStatusBar() string {
-	if m.player == nil {
-		return ""
-	}
-
-	var parts []string
-
-	if m.player.IsPlaying() {
-		parts = append(parts, statusStyle.Render("▶ Playing"))
-	} else {
-		parts = append(parts, subtleStyle.Render("⏸ Paused"))
-	}
-
-	if m.player.GetShuffle() {
-		parts = append(parts, statusStyle.Render("🔀 Shuffle"))
-	}
-
-	repeatStr := fmt.Sprintf("%s", m.player.GetRepeatMode().String())
-	parts = append(parts, statusStyle.Render(repeatStr))
-
-	volumeStr := fmt.Sprintf("🔊 %d%%", int(m.player.GetVolume()*100))
-	parts = append(parts, statusStyle.Render(volumeStr))
-
-	separator := subtleStyle.Render(" │ ")
-
-	result := ""
-	for i, part := range parts {
-		result += part
-		if i < len(parts)-1 {
-			result += separator
-		}
-	}
-
-	return result
-}
-
-func (m Model) renderProgressBar() string {
-	if m.player == nil {
-		return ""
-	}
-
-	currentTime := m.player.GetCurrentTime()
-	totalTime := m.player.GetTotalTime()
-
-	barWidth := 50
-	if m.width > 80 {
-		barWidth = m.width - 30
-	}
-
-	bar := formatProgressBar(currentTime, totalTime, barWidth)
-	timeStr := fmt.Sprintf("%s / %s", formatTime(currentTime), formatTime(totalTime))
-
-	return inputStyle.Render(bar) + subtleStyle.Render("  ") + subtleStyle.Render(timeStr)
-}
-
-func (m Model) renderTrackList() string {
-	var b strings.Builder
-
-	maxVisible := 10
-	if m.height > 30 {
-		maxVisible = m.height - 20
-	}
-
+	maxVisible := m.height - 10
 	start := 0
-	if m.selectedIndex >= maxVisible {
-		start = m.selectedIndex - maxVisible + 1
+	if m.explorerIndex >= maxVisible {
+		start = m.explorerIndex - maxVisible + 1
 	}
 
 	end := start + maxVisible
-	if end > len(m.tracks) {
-		end = len(m.tracks)
+	if end > len(m.fileExplorer.Entries) {
+		end = len(m.fileExplorer.Entries)
 	}
 
 	for i := start; i < end; i++ {
-		track := m.tracks[i]
-		prefix := "  "
-		trackStr := fmt.Sprintf("[%3d] %-40s %s", i+1,
-			truncate(track.Title, 40),
-			subtleStyle.Render(track.Artist))
+		entry := m.fileExplorer.Entries[i]
+		icon := "📁"
+		if entry.Name == ".." {
+			icon = "⬆️"
+		}
 
-		if i == m.selectedIndex {
-			trackStr = selectedStyle.Render("▶ " + trackStr)
-		} else if m.player != nil && i == m.player.GetCurrentIndex() {
-			trackStr = playingStyle.Render("♫ " + trackStr)
+		entryStr := fmt.Sprintf("%s %s", icon, entry.Name)
+
+		if i == m.explorerIndex {
+			entryStr = selectedStyle.Render("> " + entryStr)
 		} else {
-			trackStr = prefix + trackStr
+			entryStr = "  " + entryStr
 		}
 
-		b.WriteString(trackStr + "\n")
+		b.WriteString(entryStr + "\n")
 	}
 
-	if len(m.tracks) > maxVisible {
-		remaining := len(m.tracks) - end
-		if remaining > 0 {
-			b.WriteString(subtleStyle.Render(fmt.Sprintf("\n... %d more tracks", remaining)))
-		}
-	}
+	b.WriteString("\n" + subtleStyle.Render("Space: Enter • Enter: Select • Backspace: Up • ESC: Manual"))
 
 	return b.String()
-}
-
-func (m Model) renderControls() string {
-	if m.mode == ModeExplorer {
-		controls := []string{
-			"[↑↓/jk] Navigate",
-			"[Space] Enter",
-			"[Backspace/h] Up",
-			"[Enter] Select",
-			"[ESC] Manual",
-			"[q] Quit",
-		}
-		return helpStyle.Render(strings.Join(controls, " • "))
-	}
-
-	if m.mode == ModeScan {
-		controls := []string{
-			"[tab] Explorer",
-			"[Enter] Scan",
-			"[q] Quit",
-		}
-		return helpStyle.Render(strings.Join(controls, " • "))
-	}
-
-	controls := []string{
-		"[1] Library",
-		"[2] Playlists",
-		"[space] Play/Pause",
-		"[n/p] Next/Prev",
-		"[←→] Seek",
-		"[+/-] Volume",
-		"[s] Shuffle",
-		"[r] Repeat",
-		"[c] Create",
-		"[L] Load",
-		"[?] Help",
-		"[q] Quit",
-	}
-
-	return helpStyle.Render(strings.Join(controls, " • "))
 }
 
 func formatTime(d time.Duration) string {
@@ -781,7 +906,7 @@ func formatProgressBar(current, total time.Duration, width int) string {
 			Foreground(colorSubtle).
 			Background(colorBg).
 			Render(strings.Repeat("─", width))
-		return "[" + emptyBar + "]"
+		return emptyBar
 	}
 
 	ratio := float64(current) / float64(total)
@@ -793,28 +918,16 @@ func formatProgressBar(current, total time.Duration, width int) string {
 	empty := width - filled
 
 	filledBar := lipgloss.NewStyle().
-		Foreground(colorSuccess).
-		Background(colorBg).
-		Render(strings.Repeat("━", filled))
+		Foreground(colorAccent).
+		Background(colorAccent).
+		Render(strings.Repeat("▂", filled))
 
 	emptyBar := lipgloss.NewStyle().
 		Foreground(colorSubtle).
-		Background(colorBg).
-		Render(strings.Repeat("─", empty))
+		Background(colorSubtle).
+		Render(strings.Repeat("▂", empty))
 
-	// Os colchetes também precisam do background
-	brackets := lipgloss.NewStyle().
-		Foreground(colorFg).
-		Background(colorBg)
-
-	return brackets.Render("[") + filledBar + emptyBar + brackets.Render("]")
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
+	return filledBar + emptyBar
 }
 
 func scanTracks(dir string) tea.Cmd {
