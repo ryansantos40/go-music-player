@@ -525,7 +525,7 @@ func (m Model) renderColumns() string {
 
 	col1ContentWidth := col1Width - 2
 	col2ContentWidth := col2Width - 2
-	col3ContentWidth := col3Width
+	col3ContentWidth := col3Width - 2
 
 	colHeight := m.height - 14
 
@@ -763,11 +763,13 @@ func (m Model) renderTracksColumn() string {
 func (m Model) renderVisualizerColumn() string {
 	var b strings.Builder
 
-	title := "--- [ NOW PLAYING ] ---"
-	b.WriteString(sectionTitleStyle.Width(m.width/3 - 4).Render(title))
-	b.WriteString("\n\n")
+	colWidth := (m.width / 3) - 2
 
-	availableHeight := m.height - 16
+	title := "--- [ NOW PLAYING ] ---"
+	b.WriteString(sectionTitleStyle.Width(colWidth).Render(title))
+	b.WriteString("\n")
+
+	availableHeight := m.height - 14
 	infoHeight := 3
 
 	artHeight := availableHeight - infoHeight - 2
@@ -775,15 +777,33 @@ func (m Model) renderVisualizerColumn() string {
 
 	if albumArt != "" {
 		artLines := strings.Split(albumArt, "\n")
+
+		artWidth := 0
 		for _, line := range artLines {
 			if line != "" {
-				centered := lipgloss.NewStyle().
-					Width(m.width/3 - 4).
-					Align(lipgloss.Center).
+				lineW := lipgloss.Width(line)
+				if lineW > artWidth {
+					artWidth = lineW
+				}
+			}
+		}
+
+		for _, line := range artLines {
+			if line != "" {
+				lineWidth := lipgloss.Width(line)
+				padding := (colWidth - lineWidth) / 2
+				if padding < 0 {
+					padding = 0
+				}
+
+				paddedLine := strings.Repeat(" ", padding) + line
+
+				styled := lipgloss.NewStyle().
+					Width(colWidth).
 					Foreground(colorFg).
 					Background(colorBg).
-					Render(line)
-				b.WriteString(centered)
+					Render(paddedLine)
+				b.WriteString(styled)
 				b.WriteString("\n")
 			}
 		}
@@ -795,14 +815,9 @@ func (m Model) renderVisualizerColumn() string {
 	remainingSpace := availableHeight - artLinesCount - infoHeight
 
 	emptyLine := lipgloss.NewStyle().
-		Width(m.width/3 - 4).
+		Width(colWidth).
 		Background(colorBg).
 		Render("")
-
-	for i := 0; i < remainingSpace; i++ {
-		b.WriteString(emptyLine)
-		b.WriteString("\n")
-	}
 
 	for i := 0; i < remainingSpace; i++ {
 		b.WriteString(emptyLine)
@@ -815,7 +830,7 @@ func (m Model) renderVisualizerColumn() string {
 		infoStyle := lipgloss.NewStyle().
 			Foreground(colorSubtle).
 			Background(colorBg).
-			Width(m.width/3 - 4).
+			Width(colWidth).
 			Align(lipgloss.Left)
 
 		yearStr := "Unknown"
@@ -1039,7 +1054,13 @@ func (m Model) getAlbumArtBraille(height int) string {
 		return m.cachedAlbumArt
 	}
 
-	width := (m.width / 3) - 6
+	colWidth := (m.width / 3) - 2
+	squareWidth := height * 2
+
+	width := colWidth
+	if squareWidth < colWidth {
+		width = squareWidth
+	}
 
 	art := utils.GetAlbumArtBrailleColored(currentTrack.Path, width, height)
 
