@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -82,6 +83,7 @@ var (
 type Model struct {
 	viewport        viewport.Model
 	textInput       textinput.Model
+	progressBar     progress.Model
 	tracks          []utils.Track
 	scanning        bool
 	player          *utils.Player
@@ -98,6 +100,8 @@ type Model struct {
 	explorerIndex   int
 	playlistIndex   int
 	focusedColumn   int // 0=playlists, 1=tracks
+	cachedAlbumArt  string
+	cachedTrackPath string
 }
 
 type AppMode int
@@ -139,9 +143,19 @@ func NewModel() Model {
 	cwd, _ := os.Getwd()
 	fileExplorer := utils.NewFileExplorer(cwd)
 
+	prog := progress.New(progress.WithScaledGradient(string(colorAccent), string(colorSuccess)),
+		progress.WithoutPercentage(),
+	)
+
+	prog.Full = '●' //▄
+	prog.FullColor = string(colorAccent)
+	prog.Empty = '○' //▄
+	prog.EmptyColor = string(colorSubtle)
+
 	return Model{
 		viewport:        vp,
 		textInput:       ti,
+		progressBar:     prog,
 		selectedIndex:   0,
 		mode:            ModeScan,
 		lastTrackIdx:    -1,
@@ -155,6 +169,8 @@ func NewModel() Model {
 		explorerIndex:   0,
 		playlistIndex:   0,
 		focusedColumn:   0,
+		cachedAlbumArt:  "",
+		cachedTrackPath: "",
 	}
 }
 
@@ -170,6 +186,7 @@ func tick() tea.Cmd {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -406,6 +423,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport.Width = msg.Width
 		m.viewport.Height = msg.Height - 10
+		m.progressBar.Width = msg.Width - 2
 
 	case tickMsg:
 		if m.mode == ModePlayer && m.player != nil && m.player.IsPlaying() {
@@ -415,9 +433,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmd = tick()
+		cmds = append(cmds, cmd)
+
+	case progress.FrameMsg:
+		progressModel, cmd := m.progressBar.Update(msg)
+		m.progressBar = progressModel.(progress.Model)
+		cmds = append(cmds, cmd)
+
 	}
 
-	return m, cmd
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) handleInputSubmit() Model {
@@ -545,14 +570,14 @@ func (m Model) padOrTruncate(s string, width int) string {
 	visualWidth := lipgloss.Width(s)
 
 	if visualWidth >= width {
-		return m.truncateWithStyle(s, width)
+		return m.truncate(s, width)
 	}
 
 	padding := width - visualWidth
 	return s + strings.Repeat(" ", padding)
 }
 
-func (m Model) truncateWithStyle(s string, maxWidth int) string {
+func (m Model) truncate(s string, maxWidth int) string {
 	if lipgloss.Width(s) <= maxWidth {
 		return s
 	}
@@ -613,13 +638,21 @@ func (m Model) renderProgressBar() string {
 	currentTime := m.player.GetCurrentTime()
 	totalTime := m.player.GetTotalTime()
 
-	barWidth := m.width
-	bar := formatProgressBar(currentTime, totalTime, barWidth)
+	var progressPercent float64
+	if totalTime > 0 {
+		progressPercent = float64(currentTime) / float64(totalTime)
+		if progressPercent > 1 {
+			progressPercent = 1
+		}
+	}
 
-	return lipgloss.NewStyle().
+	bar := m.progressBar.ViewAs(progressPercent)
+	containerStyle := lipgloss.NewStyle().
 		Width(m.width).
-		Background(colorBg).
-		Render(bar)
+		Align(lipgloss.Center).
+		Background(colorBg)
+
+	return containerStyle.Render(bar)
 }
 
 func (m Model) renderPlaylistColumn() string {
@@ -730,42 +763,47 @@ func (m Model) renderTracksColumn() string {
 func (m Model) renderVisualizerColumn() string {
 	var b strings.Builder
 
-	title := "--- [ VISUALIZER ] ---"
+	title := "--- [ NOW PLAYING ] ---"
 	b.WriteString(sectionTitleStyle.Width(m.width/3 - 4).Render(title))
 	b.WriteString("\n\n")
 
 	availableHeight := m.height - 16
-	visualizerHeight := 7
 	infoHeight := 3
 
-	topPadding := (availableHeight - visualizerHeight - infoHeight) / 2
+	artHeight := availableHeight - infoHeight - 2
+	albumArt := m.getAlbumArtBraille(artHeight)
+
+	if albumArt != "" {
+		artLines := strings.Split(albumArt, "\n")
+		for _, line := range artLines {
+			if line != "" {
+				centered := lipgloss.NewStyle().
+					Width(m.width/3 - 4).
+					Align(lipgloss.Center).
+					Foreground(colorFg).
+					Background(colorBg).
+					Render(line)
+				b.WriteString(centered)
+				b.WriteString("\n")
+			}
+		}
+	} else {
+		b.WriteString(m.renderFallbackVisualizer(artHeight))
+	}
+
+	artLinesCount := len(strings.Split(albumArt, "\n"))
+	remainingSpace := availableHeight - artLinesCount - infoHeight
 
 	emptyLine := lipgloss.NewStyle().
 		Width(m.width/3 - 4).
 		Background(colorBg).
 		Render("")
 
-	for i := 0; i < topPadding; i++ {
+	for i := 0; i < remainingSpace; i++ {
 		b.WriteString(emptyLine)
 		b.WriteString("\n")
 	}
 
-	visualizer := m.generateVisualizer()
-	visualizerLines := strings.Split(visualizer, "\n")
-	for _, line := range visualizerLines {
-		if line != "" {
-			centered := lipgloss.NewStyle().
-				Width(m.width/3 - 4).
-				Align(lipgloss.Center).
-				Foreground(colorAccent).
-				Background(colorBg).
-				Render(line)
-			b.WriteString(centered)
-			b.WriteString("\n")
-		}
-	}
-
-	remainingSpace := availableHeight - topPadding - visualizerHeight - infoHeight
 	for i := 0; i < remainingSpace; i++ {
 		b.WriteString(emptyLine)
 		b.WriteString("\n")
@@ -988,4 +1026,63 @@ func scanTracks(dir string) tea.Cmd {
 		tracks, err := utils.ScanDir(dir)
 		return scanMsg{tracks: tracks, err: err}
 	}
+}
+
+func (m Model) getAlbumArtBraille(height int) string {
+	if m.player == nil {
+		return ""
+	}
+
+	currentTrack := m.player.GetCurrentTrack()
+
+	if currentTrack.Path == m.cachedTrackPath && m.cachedAlbumArt != "" {
+		return m.cachedAlbumArt
+	}
+
+	width := (m.width / 3) - 6
+
+	art := utils.GetAlbumArtBrailleColored(currentTrack.Path, width, height)
+
+	if art == "" {
+		return ""
+	}
+
+	m.cachedAlbumArt = art
+	m.cachedTrackPath = currentTrack.Path
+
+	return art
+}
+
+func (m Model) renderFallbackVisualizer(height int) string {
+	var b strings.Builder
+
+	visualizerHeight := 7
+	topPadding := (height - visualizerHeight) / 2
+
+	emptyLine := lipgloss.NewStyle().
+		Width(m.width/3 - 4).
+		Background(colorBg).
+		Render("")
+
+	for i := 0; i < topPadding; i++ {
+		b.WriteString(emptyLine)
+		b.WriteString("\n")
+	}
+
+	visualizer := m.generateVisualizer()
+	visualizerLines := strings.Split(visualizer, "\n")
+	for _, line := range visualizerLines {
+		if line != "" {
+			centered := lipgloss.NewStyle().
+				Width(m.width/3 - 4).
+				Align(lipgloss.Center).
+				Foreground(colorAccent).
+				Background(colorBg).
+				Render(line)
+			b.WriteString(centered)
+			b.WriteString("\n")
+		}
+	}
+
+	return b.String()
 }

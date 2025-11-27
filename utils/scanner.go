@@ -17,6 +17,7 @@ type Track struct {
 	Album    string
 	Duration time.Duration
 	Year     int
+	HasCover bool
 }
 
 var supportedExt = map[string]struct{}{
@@ -45,11 +46,12 @@ func extractMetadata(path string) (Track, error) {
 	}
 
 	track := Track{
-		Path:   path,
-		Title:  metadata.Title(),
-		Artist: metadata.Artist(),
-		Album:  metadata.Album(),
-		Year:   metadata.Year(),
+		Path:     path,
+		Title:    metadata.Title(),
+		Artist:   metadata.Artist(),
+		Album:    metadata.Album(),
+		Year:     metadata.Year(),
+		HasCover: metadata.Picture() != nil,
 	}
 
 	return track, nil
