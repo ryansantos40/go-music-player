@@ -22,11 +22,14 @@ var brailleMap = [4][2]int{
 	{0x40, 0x80},
 }
 
-type pixelInfo struct {
-	x, y    int
-	lum     float64
-	r, g, b uint8
-}
+const (
+	colorSampleFactor    = 2
+	colorSaturationBoost = 1.55
+	colorContrastBoost   = 1.20
+	colorVibranceBoost   = 0.35
+	colorGamma           = 1.10
+	edgeEmphasis         = 0.65
+)
 
 func ExtractAlbumArt(path string) (image.Image, error) {
 	f, err := os.Open(path)
@@ -107,6 +110,13 @@ func normalizeChannel(val, minLum, lumRange float64) float64 {
 	return normalized
 }
 
+func preprocessColorImage(img image.Image, pixelWidth, pixelHeight uint) *image.RGBA {
+	resized := resize.Resize(pixelWidth, pixelHeight, img, resize.Lanczos3)
+	normalized := normalizeImage(resized)
+	enhanced := enhanceEdges(normalized)
+	return boostColors(enhanced, colorSaturationBoost, colorContrastBoost, colorVibranceBoost, colorGamma)
+}
+
 func getLuminance(c color.Color) float64 {
 	r, g, b, _ := c.RGBA()
 	return 0.299*float64(r>>8) + 0.587*float64(g>>8) + 0.114*float64(b>>8)
@@ -140,11 +150,21 @@ func enhanceEdges(img image.Image) *image.RGBA {
 				}
 			}
 
+			rSharp := clampFloat(rSum, 0, 255)
+			gSharp := clampFloat(gSum, 0, 255)
+			bSharp := clampFloat(bSum, 0, 255)
+
+			origR, origG, origB, a := img.At(x, y).RGBA()
+			mix := func(orig uint32, sharp float64) uint8 {
+				base := float64(orig >> 8)
+				return uint8(clampFloat(base+((sharp-base)*edgeEmphasis), 0, 255))
+			}
+
 			result.Set(x, y, color.RGBA{
-				R: uint8(clampFloat(rSum, 0, 255)),
-				G: uint8(clampFloat(gSum, 0, 255)),
-				B: uint8(clampFloat(bSum, 0, 255)),
-				A: 255,
+				R: mix(origR, rSharp),
+				G: mix(origG, gSharp),
+				B: mix(origB, bSharp),
+				A: uint8(a >> 8),
 			})
 		}
 	}
@@ -367,35 +387,33 @@ func imageToBrailleColored(img image.Image, width, height int) string {
 		return ""
 	}
 
-	pixelWidth := uint(width * 2)
-	pixelHeight := uint(height * 4)
+	pixelWidth := uint(width * 2 * colorSampleFactor)
+	pixelHeight := uint(height * 4 * colorSampleFactor)
 
-	resized := resize.Resize(pixelWidth, pixelHeight, img, resize.Lanczos3)
+	processed := preprocessColorImage(img, pixelWidth, pixelHeight)
 
-	boosted := boostColors(resized, 1.4, 1.2)
-
-	bounds := boosted.Bounds()
+	bounds := processed.Bounds()
 	var result strings.Builder
 
-	var lastR, lastG, lastB uint8 = 0, 0, 0
+	var lastR, lastG, lastB uint8
 	firstChar := true
 
-	for y := bounds.Min.Y; y < bounds.Max.Y; y += 4 {
-		for x := bounds.Min.X; x < bounds.Max.X; x += 2 {
-			brailleChar, avgColor := getBrailleCharForColoredBlockWeighted(boosted, x, y)
+	stepX := 2 * colorSampleFactor
+	stepY := 4 * colorSampleFactor
 
-			r8, g8, b8 := avgColor.R, avgColor.G, avgColor.B
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += stepY {
+		for x := bounds.Min.X; x < bounds.Max.X; x += stepX {
+			brailleChar, avgColor := getBrailleCharForColoredBlockWeighted(processed, x, y, colorSampleFactor)
 
-			if firstChar || colorDiff(r8, g8, b8, lastR, lastG, lastB) > 20 {
-				result.WriteString(fmt.Sprintf("\033[38;2;%d;%d;%dm", r8, g8, b8))
-				lastR, lastG, lastB = r8, g8, b8
+			if firstChar || colorDiff(avgColor.R, avgColor.G, avgColor.B, lastR, lastG, lastB) > 12 {
+				result.WriteString(fmt.Sprintf("\033[38;2;%d;%d;%dm", avgColor.R, avgColor.G, avgColor.B))
+				lastR, lastG, lastB = avgColor.R, avgColor.G, avgColor.B
 				firstChar = false
 			}
 
 			result.WriteRune(brailleChar)
 		}
-		result.WriteString("\033[0m")
-		result.WriteRune('\n')
+		result.WriteString("\033[0m\n")
 		firstChar = true
 	}
 
@@ -407,23 +425,23 @@ func imageToBraille256(img image.Image, width, height int) string {
 		return ""
 	}
 
-	pixelWidth := uint(width * 2)
-	pixelHeight := uint(height * 4)
+	pixelWidth := uint(width * 2 * colorSampleFactor)
+	pixelHeight := uint(height * 4 * colorSampleFactor)
 
-	resized := resize.Resize(pixelWidth, pixelHeight, img, resize.Lanczos3)
-	boosted := boostColors(resized, 1.4, 1.2)
+	processed := preprocessColorImage(img, pixelWidth, pixelHeight)
 
-	bounds := boosted.Bounds()
+	bounds := processed.Bounds()
 	var result strings.Builder
 
+	stepX := 2 * colorSampleFactor
+	stepY := 4 * colorSampleFactor
 	lastColor := -1
 
-	for y := bounds.Min.Y; y < bounds.Max.Y; y += 4 {
-		for x := bounds.Min.X; x < bounds.Max.X; x += 2 {
-			brailleChar, avgColor := getBrailleCharForColoredBlockWeighted(boosted, x, y)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += stepY {
+		for x := bounds.Min.X; x < bounds.Max.X; x += stepX {
+			brailleChar, avgColor := getBrailleCharForColoredBlockWeighted(processed, x, y, colorSampleFactor)
 
 			colorCode := rgbTo256(avgColor)
-
 			if colorCode != lastColor {
 				result.WriteString(fmt.Sprintf("\033[38;5;%dm", colorCode))
 				lastColor = colorCode
@@ -431,8 +449,7 @@ func imageToBraille256(img image.Image, width, height int) string {
 
 			result.WriteRune(brailleChar)
 		}
-		result.WriteString("\033[0m")
-		result.WriteRune('\n')
+		result.WriteString("\033[0m\n")
 		lastColor = -1
 	}
 
@@ -462,19 +479,25 @@ func getBrailleCharFromGray(img *image.Gray, startX, startY int) rune {
 	return rune(0x2800 + brailleValue)
 }
 
-func getBrailleCharForColoredBlockWeighted(img image.Image, startX, startY int) (rune, color.RGBA) {
-	bounds := img.Bounds()
-
-	type pixelData struct {
-		row, col int
-		lum      float64
-		r, g, b  uint8
+func getBrailleCharForColoredBlockWeighted(img image.Image, startX, startY, sampleFactor int) (rune, color.RGBA) {
+	if sampleFactor < 1 {
+		sampleFactor = 1
 	}
 
+	blockWidth := 2 * sampleFactor
+	blockHeight := 4 * sampleFactor
+
+	type pixelData struct {
+		brailleRow, brailleCol int
+		lum                    float64
+		r, g, b                uint8
+	}
+
+	bounds := img.Bounds()
 	var pixels []pixelData
 
-	for row := 0; row < 4; row++ {
-		for col := 0; col < 2; col++ {
+	for row := 0; row < blockHeight; row++ {
+		for col := 0; col < blockWidth; col++ {
 			x := startX + col
 			y := startY + row
 
@@ -484,12 +507,14 @@ func getBrailleCharForColoredBlockWeighted(img image.Image, startX, startY int) 
 
 			c := img.At(x, y)
 			r, g, b, _ := c.RGBA()
-			r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
 
 			pixels = append(pixels, pixelData{
-				row: row, col: col,
-				lum: getLuminance(c),
-				r:   r8, g: g8, b: b8,
+				brailleRow: row / sampleFactor,
+				brailleCol: col / sampleFactor,
+				lum:        getLuminance(c),
+				r:          uint8(r >> 8),
+				g:          uint8(g >> 8),
+				b:          uint8(b >> 8),
 			})
 		}
 	}
@@ -510,26 +535,26 @@ func getBrailleCharForColoredBlockWeighted(img image.Image, startX, startY int) 
 	}
 
 	lumRange := maxLum - minLum
-	avgLum := sumLum / float64(len(pixels))
-
-	var threshold float64
-	if lumRange < 20 {
-		threshold = 128
-	} else {
-		threshold = avgLum
+	if lumRange < 25 && sampleFactor < 3 {
+		return getBrailleCharForColoredBlockWeighted(img, startX, startY, sampleFactor+1)
 	}
 
+	avgLum := sumLum / float64(len(pixels))
+	globalLum := getLuminance(img.At(startX, startY))
+
+	threshold := 0.55*avgLum + 0.45*globalLum
+	threshold = clampFloat(threshold, minLum+3, maxLum-3)
+
 	var brailleValue int
-	var weightedR, weightedG, weightedB float64
-	var totalWeight float64
+	var weightedR, weightedG, weightedB, totalWeight float64
 
 	for _, p := range pixels {
 		if p.lum < threshold {
-			brailleValue |= brailleMap[p.row][p.col]
+			brailleValue |= brailleMap[p.brailleRow][p.brailleCol]
 		}
 
 		saturation := getSaturation(float64(p.r), float64(p.g), float64(p.b))
-		weight := 1.0 + saturation*2.0
+		weight := 1.0 + saturation*1.8
 
 		weightedR += float64(p.r) * weight
 		weightedG += float64(p.g) * weight
@@ -562,7 +587,7 @@ func getSaturation(r, g, b float64) float64 {
 	return (max - min) / max
 }
 
-func boostColors(img image.Image, saturationFactor, contrastFactor float64) *image.RGBA {
+func boostColors(img image.Image, saturationFactor, contrastFactor, vibrance, gamma float64) *image.RGBA {
 	bounds := img.Bounds()
 	result := image.NewRGBA(bounds)
 
@@ -583,11 +608,16 @@ func boostColors(img image.Image, saturationFactor, contrastFactor float64) *ima
 
 			h, s, l := rgbToHsl(r8, g8, b8)
 			s = clampFloat(s*saturationFactor, 0, 1)
-			r8, g8, b8 = hslToRgb(h, s, l)
+			s = clampFloat(s+(1-s)*vibrance*(1-l), 0, 1)
 
+			r8, g8, b8 = hslToRgb(h, s, l)
 			r8 = clampFloat(((r8-avgLum)*contrastFactor)+avgLum, 0, 255)
 			g8 = clampFloat(((g8-avgLum)*contrastFactor)+avgLum, 0, 255)
 			b8 = clampFloat(((b8-avgLum)*contrastFactor)+avgLum, 0, 255)
+
+			r8 = applyGamma(r8, gamma)
+			g8 = applyGamma(g8, gamma)
+			b8 = applyGamma(b8, gamma)
 
 			result.Set(x, y, color.RGBA{
 				R: uint8(r8),
@@ -599,6 +629,15 @@ func boostColors(img image.Image, saturationFactor, contrastFactor float64) *ima
 	}
 
 	return result
+}
+
+func applyGamma(val, gamma float64) float64 {
+	if gamma <= 0 {
+		return val
+	}
+
+	normalized := clampFloat(val/255, 0, 1)
+	return math.Pow(normalized, gamma) * 255
 }
 
 func colorDiff(r1, g1, b1, r2, g2, b2 uint8) int {
