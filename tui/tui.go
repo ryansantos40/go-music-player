@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	colorBg      = lipgloss.Color("#1e2139")
+	colorBg      = lipgloss.Color("")
 	colorFg      = lipgloss.Color("#e0e0e0")
 	colorAccent  = lipgloss.Color("#6ee7b7")
 	colorSuccess = lipgloss.Color("#6ee7b7")
@@ -147,9 +147,9 @@ func NewModel() Model {
 		progress.WithoutPercentage(),
 	)
 
-	prog.Full = '●' //▄
+	prog.Full = '▄' //▄
 	prog.FullColor = string(colorAccent)
-	prog.Empty = '○' //▄
+	prog.Empty = '▄' //▄
 	prog.EmptyColor = string(colorSubtle)
 
 	return Model{
@@ -763,7 +763,7 @@ func (m Model) renderTracksColumn() string {
 func (m Model) renderVisualizerColumn() string {
 	var b strings.Builder
 
-	colWidth := (m.width / 3) - 2
+	colWidth := (m.width / 3)
 
 	title := "--- [ NOW PLAYING ] ---"
 	b.WriteString(sectionTitleStyle.Width(colWidth).Render(title))
@@ -772,7 +772,7 @@ func (m Model) renderVisualizerColumn() string {
 	availableHeight := m.height - 14
 	infoHeight := 3
 
-	artHeight := availableHeight - infoHeight - 2
+	artHeight := availableHeight - infoHeight - 1
 	albumArt := m.getAlbumArtBraille(artHeight)
 
 	if albumArt != "" {
@@ -1062,7 +1062,7 @@ func (m Model) getAlbumArtBraille(height int) string {
 		width = squareWidth
 	}
 
-	art := utils.GetAlbumArtBrailleColored(currentTrack.Path, width, height)
+	art := utils.GetAlbumArtHalfBlocksColored(currentTrack.Path, width, height)
 
 	if art == "" {
 		return ""

@@ -278,7 +278,6 @@ func atkinsonDither(img image.Image) *image.Gray {
 	width := bounds.Max.X - bounds.Min.X
 	height := bounds.Max.Y - bounds.Min.Y
 
-	// Converter para escala de cinza com buffer de float
 	pixels := make([][]float64, height)
 	for y := 0; y < height; y++ {
 		pixels[y] = make([]float64, width)
@@ -469,7 +468,6 @@ func getBrailleCharFromGray(img *image.Gray, startX, startY int) rune {
 				continue
 			}
 
-			// Pixels escuros (< 128) ativam o ponto Braille
 			if img.GrayAt(x, y).Y < 128 {
 				brailleValue |= brailleMap[row][col]
 			}
@@ -664,7 +662,6 @@ func rgbTo256(c color.Color) int {
 	g8 := int(g >> 8)
 	b8 := int(b >> 8)
 
-	// Verificar se é tom de cinza
 	if absDiff(r8, g8) < 10 && absDiff(g8, b8) < 10 {
 		gray := (r8 + g8 + b8) / 3
 		if gray < 8 {
@@ -676,7 +673,6 @@ func rgbTo256(c color.Color) int {
 		return int(math.Round(float64(gray-8)/247*24)) + 232
 	}
 
-	// Converter para cubo de cores 6x6x6
 	r6 := int(math.Round(float64(r8) / 255 * 5))
 	g6 := int(math.Round(float64(g8) / 255 * 5))
 	b6 := int(math.Round(float64(b8) / 255 * 5))
@@ -689,6 +685,66 @@ func absDiff(a, b int) int {
 		return a - b
 	}
 	return b - a
+}
+
+func imageToHalfBlocksColored(img image.Image, width, height int) string {
+	if img == nil {
+		return ""
+	}
+
+	pixelWidth := uint(width)
+	pixelHeight := uint(height * 2)
+
+	processed := preprocessColorImage(img, pixelWidth, pixelHeight)
+	bounds := processed.Bounds()
+
+	var result strings.Builder
+	const alphaThreshold = 8 // ~3%
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y += 2 {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			topColor, topAlpha := samplePixel(processed, x, y)
+			bottomColor, bottomAlpha := samplePixel(processed, x, y+1)
+
+			char, seq := halfBlockGlyph(topColor, topAlpha, bottomColor, bottomAlpha, alphaThreshold)
+			result.WriteString(seq)
+			result.WriteRune(char)
+		}
+		result.WriteString("\033[0m\n")
+	}
+
+	return result.String()
+}
+
+func samplePixel(img image.Image, x, y int) (color.RGBA, uint32) {
+	bounds := img.Bounds()
+	if y >= bounds.Max.Y {
+		return color.RGBA{0, 0, 0, 0}, 0
+	}
+	if x >= bounds.Max.X {
+		x = bounds.Max.X - 1
+	}
+	r, g, b, a := img.At(x, y).RGBA()
+	return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}, a
+}
+
+func halfBlockGlyph(top color.RGBA, topAlpha uint32, bottom color.RGBA, bottomAlpha uint32, alphaThreshold uint32) (rune, string) {
+	topVisible := topAlpha > alphaThreshold
+	bottomVisible := bottomAlpha > alphaThreshold
+
+	switch {
+	case !topVisible && !bottomVisible:
+		return ' ', "\033[0m"
+	case topVisible && !bottomVisible:
+		return '▀', fmt.Sprintf("\033[38;2;%d;%d;%dm\033[49m", top.R, top.G, top.B)
+	case !topVisible && bottomVisible:
+		return '▄', fmt.Sprintf("\033[38;2;%d;%d;%dm\033[49m", bottom.R, bottom.G, bottom.B)
+	default:
+		if colorDiff(top.R, top.G, top.B, bottom.R, bottom.G, bottom.B) < 10 {
+			return '█', fmt.Sprintf("\033[38;2;%d;%d;%dm\033[49m", top.R, top.G, top.B)
+		}
+		return '▀', fmt.Sprintf("\033[38;2;%d;%d;%dm\033[48;2;%d;%d;%dm", top.R, top.G, top.B, bottom.R, bottom.G, bottom.B)
+	}
 }
 
 func GetAlbumArtBraille(path string, width, height int) string {
@@ -716,4 +772,13 @@ func GetAlbumArtBraille256(path string, width, height int) string {
 	}
 
 	return imageToBraille256(img, width, height)
+}
+
+func GetAlbumArtHalfBlocksColored(path string, width, height int) string {
+	img, err := ExtractAlbumArt(path)
+	if err != nil || img == nil {
+		return ""
+	}
+
+	return imageToHalfBlocksColored(img, width, height)
 }
