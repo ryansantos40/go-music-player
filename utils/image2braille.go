@@ -24,8 +24,8 @@ var brailleMap = [4][2]int{
 
 const (
 	colorSampleFactor    = 2
-	colorSaturationBoost = 1.55
-	colorContrastBoost   = 1.20
+	colorSaturationBoost = 1.20
+	colorContrastBoost   = 1.10
 	colorVibranceBoost   = 0.35
 	colorGamma           = 1.10
 	edgeEmphasis         = 0.65
