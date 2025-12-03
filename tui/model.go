@@ -50,8 +50,12 @@ func NewModel() Model {
 		fileExplorer:    fileExplorer,
 		explorerIndex:   0,
 		playlistIndex:   0,
+		albumIndex:      0,
+		artistIndex:     0,
 		focusedColumn:   0,
 		cachedAlbumArt:  "",
 		cachedTrackPath: "",
+		librarySection:  SectionPlaylists,
+		currentFilter:   TrackFilter{Type: FilterAll, Key: "", Label: "All Tracks"},
 	}
 }

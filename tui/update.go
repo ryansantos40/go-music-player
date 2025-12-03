@@ -82,58 +82,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "tab":
 				m.focusedColumn = (m.focusedColumn + 1) % 2
+
+			case "[":
+				if m.focusedColumn == 0 {
+					m.librarySection = (m.librarySection + 2) % 3
+					m.syncLibrarySelection()
+				}
+
+			case "]":
+				if m.focusedColumn == 0 {
+					m.librarySection = (m.librarySection + 1) % 3
+					m.syncLibrarySelection()
+				}
+
 			case "up", "k":
 				if m.focusedColumn == 0 {
-					playlists := m.playlistStore.ListPlaylists()
-					if len(playlists) > 0 {
-						m.playlistIndex = (m.playlistIndex - 1 + len(playlists)) % len(playlists)
-						m.currentPlaylist = playlists[m.playlistIndex]
-						m.selectedIndex = 0
-					}
-				} else if m.focusedColumn == 1 {
-					tracksLen := len(m.tracks)
-					if m.currentPlaylist != "" {
-						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-							tracksLen = len(playlist.Tracks)
-						}
-					}
-					if tracksLen > 0 {
-						m.selectedIndex = (m.selectedIndex - 1 + tracksLen) % tracksLen
-					}
+					m.navigateLibrary(-1)
+
+				} else {
+					m.navigateTracks(-1)
 				}
+
 			case "down", "j":
 				if m.focusedColumn == 0 {
-					playlists := m.playlistStore.ListPlaylists()
-					if len(playlists) > 0 {
-						m.playlistIndex = (m.playlistIndex + 1) % len(playlists)
-						m.currentPlaylist = playlists[m.playlistIndex]
-						m.selectedIndex = 0
-					}
-				} else if m.focusedColumn == 1 {
-					tracksLen := len(m.tracks)
-					if m.currentPlaylist != "" {
-						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-							tracksLen = len(playlist.Tracks)
-						}
-					}
-					if tracksLen > 0 {
-						m.selectedIndex = (m.selectedIndex + 1) % tracksLen
-					}
+					m.navigateLibrary(1)
+
+				} else {
+					m.navigateTracks(1)
 				}
+
 			case "enter":
 				if m.focusedColumn == 1 && m.player != nil {
-					if m.currentPlaylist != "" {
-						if playlist, err := m.playlistStore.GetPlaylist(m.currentPlaylist); err == nil {
-							if m.selectedIndex < len(playlist.Tracks) {
-								m.player = utils.NewPlayer(playlist.Tracks)
-								m.player.Skip(m.selectedIndex)
-								m.lastTrackIdx = m.selectedIndex
-							}
-						}
-					} else if len(m.tracks) > 0 {
-						m.player.Skip(m.selectedIndex)
-						m.lastTrackIdx = m.selectedIndex
-					}
+					m.handleTrackSelection()
 				}
 			case " ":
 				if m.player != nil {
